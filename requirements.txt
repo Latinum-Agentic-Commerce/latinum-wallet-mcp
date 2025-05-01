@@ -1,0 +1,10 @@
+mcp
+google-adk
+python-dotenv
+supabase
+resend
+keyring
+base58
+solana
+solders
+deprecated # needed by Google ADK but not in requirments

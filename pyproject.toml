@@ -1,0 +1,28 @@
+[project]
+name = "latinum-wallet-mcp"
+version = "0.0.19"
+description = "Latinum Wallet MCP Server"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp",
+    "google-adk",
+    "solana",
+    "solders",
+    "base58",
+    "python-dotenv",
+    "resend",
+    "supabase",
+    "keyring",
+    "deprecated"
+]
+
+[project.scripts]
+latinum-wallet-mcp = "latinum_wallet_mcp.server_stdio:main"
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["latinum_wallet_mcp"]

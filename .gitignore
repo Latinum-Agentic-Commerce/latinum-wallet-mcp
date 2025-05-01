@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# PyInstaller build
+dist/
+build/
+*.spec
+
+# Wheels / distributions
+*.egg-info/
+*.egg
+*.whl
+*.tar.gz
+.eggs/
+
+# Pyproject tools
+*.log
+pip-wheel-metadata/
+
+# VSCode & IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# macOS
+.DS_Store
+
+# dotenv
+.env
+
+# OS / backup / temp
+*.bak
+*.swp
+*.tmp
+*~
+
+# Tests
+htmlcov/
+.tox/
+.coverage
+.cache
+.pytest_cache/
+
+# Mypy
+.mypy_cache/
+
+# Pyre
+.pyre/
+
+# Type checker and lint
+ruff_cache/
+.dmypy.json
+.pyre/
+
+# Logs
+*.log
+
+# CLI output
+latinum_wallet_mcp.egg-info/
