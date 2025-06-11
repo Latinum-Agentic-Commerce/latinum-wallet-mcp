@@ -81,6 +81,11 @@ Recent Transactions:
 https://explorer.solana.com/tx/3MHjT3tEuGUj58G3BYbiWqFqGDaYvwfRnCVrtwC8ZPCKkpGmyhXNimnzJRrWLUnSYMaCaxJMrRXx6Czc9nJcEg7J?cluster=devnet
 ```
 
+To install your local build as a CLI for testing with Claude:
+```bash
+pip install --editable -f .
+```
+
 # 📑 PyPI Publishing
 
 ```bash

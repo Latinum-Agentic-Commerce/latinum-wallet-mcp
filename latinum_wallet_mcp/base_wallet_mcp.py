@@ -3,6 +3,8 @@
 # MCP Wallet Wrapper for Base Mainnet or Base Sepolia (Ethereum L2)
 # Assumes /api/base_wallet signs a raw transaction and /api/check_balance fetches ETH balance
 
+# TODO This piece of code works but is currently unused. The wallet should be able to use both ETH and Solana.
+
 import requests
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.mcp_tool.conversion_utils import adk_to_mcp_tool_type

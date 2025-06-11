@@ -3,13 +3,17 @@
 # Get balance API require to pass the public key.
 # Need to save the public key in supabase
 
+import base64
 import os
-import requests
 import keyring
 import base58
 from typing import Optional
 from solana.rpc.api import Client
+from solders.transaction import Transaction
+from solders.system_program import TransferParams, transfer
+from solders.pubkey import Pubkey
 from solders.keypair import Keypair
+from solders.message import Message
 from mcp import types as mcp_types
 from mcp.server.lowlevel import Server
 from google.adk.tools.function_tool import FunctionTool
@@ -17,7 +21,6 @@ from google.adk.tools.mcp_tool.conversion_utils import adk_to_mcp_tool_type
 
 # Configuration
 SOLANA_RPC_URL = "https://api.devnet.solana.com"
-LATINUM_API_URL = "https://latinum.ai/api/solana_wallet"
 SERVICE_NAME = "latinum-wallet-mcp"
 KEY_NAME = "latinum-key"
 AIR_DROP_THRESHOLD = 100_000
@@ -41,7 +44,7 @@ else:
 
 public_key = keypair.pubkey()
 
-# Airdrop if low balance
+# Airdrop if balance is too low
 balance = client.get_balance(public_key).value
 if balance < AIR_DROP_THRESHOLD:
     print(f"Requesting airdrop of {AIR_DROP_AMOUNT} lamports...")
@@ -67,11 +70,8 @@ def print_wallet_info():
         if not sigs:
             print("No recent transactions found.")
         else:
-            explorer_base = "https://explorer.solana.com/tx"
-            cluster_suffix = "?cluster=devnet"
             for s in sigs:
-                url = f"{explorer_base}/{s.signature}{cluster_suffix}"
-                print(f"{url}")
+                print(f"https://explorer.solana.com/tx/{s.signature}?cluster=devnet")
     except Exception as e:
         print(f"Failed to fetch transactions: {e}")
 
@@ -79,27 +79,31 @@ print_wallet_info()
 
 # MCP server with wallet tools
 def build_mcp_wallet_server() -> Server:
-    # Tool: Get signed transaction
     def get_signed_transaction(targetWallet: str, amountLamports: int) -> dict:
         try:
-            res = requests.post(LATINUM_API_URL, json={
-                "sourceWalletPrivate": PRIVATE_KEY_BASE58,
-                "targetWallet": targetWallet,
-                "amountLamports": amountLamports
-            })
-            res.raise_for_status()
-            data = res.json()
+            recent_blockhash_resp = client.get_latest_blockhash()
+            blockhash = recent_blockhash_resp.value.blockhash
 
-            if not data.get("success") or not data.get("signedTransactionB64"):
-                return {
-                    "success": False,
-                    "message": "Failed to retrieve signed transaction."
-                }
+            to_pubkey = Pubkey.from_bytes(base58.b58decode(targetWallet))
+
+            ix = transfer(
+                TransferParams(
+                    from_pubkey=public_key,
+                    to_pubkey=to_pubkey,
+                    lamports=amountLamports,
+                )
+            )
+
+            msg = Message([ix], public_key)
+            tx = Transaction([keypair], msg, blockhash)
+
+            raw_tx = bytes(tx)
+            signed_transaction_b64 = base64.b64encode(raw_tx).decode("utf-8")
 
             return {
                 "success": True,
-                "signedTransactionB64": data["signedTransactionB64"],
-                "message": f"Signed transaction generated:\n{data['signedTransactionB64']}"
+                "signedTransactionB64": signed_transaction_b64,
+                "message": f"Signed transaction generated:\n{signed_transaction_b64}"
             }
         except Exception as e:
             return {
@@ -107,22 +111,15 @@ def build_mcp_wallet_server() -> Server:
                 "message": f"Error creating signed transaction: {str(e)}"
             }
 
-    # Tool: Get wallet address, balance, and transactions
     def get_wallet_info(_: Optional[str] = None) -> dict:
         try:
             balance = client.get_balance(public_key).value
             sigs = client.get_signatures_for_address(public_key, limit=5).value
 
-            explorer_base = "https://explorer.solana.com/tx"
-            cluster_suffix = "?cluster=devnet"
-
-            tx_links = []
-            if sigs:
-                for s in sigs:
-                    link = f"{explorer_base}/{s.signature}{cluster_suffix}"
-                    tx_links.append(link)
-            else:
-                tx_links.append("No recent transactions found.")
+            tx_links = [
+                f"https://explorer.solana.com/tx/{s.signature}?cluster=devnet"
+                for s in sigs
+            ] if sigs else ["No recent transactions found."]
 
             message = (
                 f"Address: {public_key}\n"
@@ -143,7 +140,6 @@ def build_mcp_wallet_server() -> Server:
                 "message": f"Error fetching wallet info: {str(e)}"
             }
 
-    # Register MCP tools
     wallet_tool = FunctionTool(get_signed_transaction)
     info_tool = FunctionTool(get_wallet_info)
     server = Server(SERVICE_NAME)
