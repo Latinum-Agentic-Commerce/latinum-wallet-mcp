@@ -7,6 +7,7 @@ import base64
 import os
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, List
+from importlib.metadata import version, PackageNotFoundError
 
 import base58
 import keyring
@@ -28,6 +29,49 @@ from spl.token.instructions import (
     transfer_checked,
     TransferCheckedParams,
 )
+
+# Known token mint addresses and their labels
+KNOWN_TOKENS = {
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+    '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R': 'RAY',
+    'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt': 'SRM',
+    'EchesyfXePKdLtoiZSL8pBe8Myagyy8ZRqsACNCFGnvp': 'FIDA',
+    'So11111111111111111111111111111111111111112': 'wSOL',
+}
+
+
+def get_token_label(mint: str, client: Client) -> str:
+    """
+    Get a human-readable token label from a mint address.
+    
+    Args:
+        mint: The mint address as a string
+        client: Solana RPC client
+        
+    Returns:
+        Token symbol/label or shortened mint address as fallback
+    """
+    # Check known tokens first
+    if mint in KNOWN_TOKENS:
+        return KNOWN_TOKENS[mint]
+    
+    try:
+        # Try to fetch token metadata from the mint account
+        mint_pubkey = Pubkey.from_string(mint)
+        mint_info = client.get_account_info(mint_pubkey)
+        
+        if mint_info.value and mint_info.value.data:
+            # For now, we can't easily parse metadata without additional libraries
+            # This would require the Metaplex metadata program parsing
+            pass
+        
+        # Fallback: return shortened mint address
+        return mint[:8] + '...'
+    except Exception as e:
+        print(f"[Solana] Could not fetch token metadata for {mint}: {e}")
+        return mint[:8] + '...'
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 🔧  Configuration & helpers
@@ -142,34 +186,50 @@ def get_token_decimals(client: Client, mint_address: Pubkey) -> int:
 
 
 def print_wallet_info(network: Optional[str] = None):
-    net = (network or DEFAULT_NETWORK).lower()
-    client = get_client(net)
-    print(f"\nWallet Information ({net})")
-    print(f"Public Key: {public_key}")
-
-    balance_lamports = client.get_balance(public_key).value
-    print(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} SOL)")
-
-    # Display SPL token balances
-    tokens = fetch_token_balances(client, public_key)
-    if tokens:
-        print("Token Balances:")
-        for t in tokens:
-            print(f"  {t['uiAmount']} (mint: {t['mint']})")
-    else:
-        print("No SPL Token balances found.")
-
-    # Recent transactions
+    # Get package version
     try:
-        print("Recent Transactions:")
-        sigs = client.get_signatures_for_address(public_key).value
-        if not sigs:
-            print("No recent transactions found.")
+        pkg_version = version("latinum-wallet-mcp")
+    except PackageNotFoundError:
+        pkg_version = "development"
+    
+    print(f"\nWallet Information - Version {pkg_version}")
+    print(f"Public Key: {public_key}")
+    
+    # Check both mainnet and devnet
+    networks = ["mainnet", "devnet"]
+    if network:
+        networks = [network.lower()]
+    
+    for net in networks:
+        client = get_client(net)
+        
+        print(f"\n--- {net.upper()} ---")
+        
+        balance_lamports = client.get_balance(public_key).value
+        sol_label = "SOL" if net == "mainnet" else "DEV SOL"
+        print(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} {sol_label})")
+
+        # Display SPL token balances
+        tokens = fetch_token_balances(client, public_key)
+        if tokens:
+            print("Token Balances:")
+            for t in tokens:
+                token_label = get_token_label(t['mint'], client)
+                print(f"  {t['uiAmount']} {token_label} ({t['mint']})")
         else:
-            for s in sigs:
-                print(explorer_tx_url(s.signature, net))
-    except Exception as exc:
-        print(f"Failed to fetch transactions: {exc}")
+            print("No SPL Token balances found.")
+
+        # Recent transactions
+        try:
+            print("Recent Transactions:")
+            sigs = client.get_signatures_for_address(public_key).value
+            if not sigs:
+                print("No recent transactions found.")
+            else:
+                for s in sigs:
+                    print(explorer_tx_url(s.signature, net))
+        except Exception as exc:
+            print(f"Failed to fetch transactions: {exc}")
 
 
 print_wallet_info()
@@ -194,7 +254,7 @@ def build_mcp_wallet_server() -> Server:
             # ------------------------------------------------------------------
             # 1️⃣  Balance check
             # ------------------------------------------------------------------
-            if mint is None:  # native SOL
+            if mint is None:  # SOL
                 current_balance = client.get_balance(public_key).value
                 if current_balance < amountAtomic:
                     short = amountAtomic - current_balance
@@ -279,17 +339,42 @@ def build_mcp_wallet_server() -> Server:
 
     # ▸▸▸ TOOL 2 – Wallet info (SOL + tokens)
     async def get_wallet_info(network: Optional[str] = None) -> dict:
-        net = (network or DEFAULT_NETWORK).lower()
+        net = (network or "mainnet").lower()
         client = get_client(net)
         try:
             balance = client.get_balance(public_key).value
             tokens = fetch_token_balances(client, public_key)
             sigs = client.get_signatures_for_address(public_key, limit=5).value
             tx_links = [explorer_tx_url(s.signature, net) for s in sigs] if sigs else ["No recent transactions."]
+            
+            # Format token balances with labels (show first)
+            token_lines = []
+            for t in tokens:
+                token_label = get_token_label(t['mint'], client)
+                token_lines.append(f" • {t['uiAmount']} {token_label} ({t['mint']})")
+            
+            # Build balance text (SOL and dev SOL only if present)
+            balance_lines = []
+            if balance > 0:
+                balance_lines.append(f" • {lamports_to_sol(balance):.6f} SOL")
+            
+            # Check for devnet balance if we're on mainnet
+            if net == "mainnet":
+                try:
+                    dev_client = get_client("devnet")
+                    dev_balance = dev_client.get_balance(public_key).value
+                    if dev_balance > 0:
+                        balance_lines.append(f" • {lamports_to_sol(dev_balance):.6f} DEV SOL")
+                except:
+                    pass
+            
+            # Build message with tokens first, then balances
+            all_balances = token_lines + balance_lines
+            balances_text = "\n".join(all_balances) if all_balances else "None"
+            
             msg = (
-                    f"Address: {public_key}\nBalance: {lamports_to_sol(balance):.6f} SOL\n\n"
-                    f"Token balances:\n" + (
-                                "\n".join([f" • {t['uiAmount']} (mint {t['mint']})" for t in tokens]) or "None") +
+                    f"Address: {public_key}\n\n"
+                    f"Balances:\n{balances_text}" +
                     "\n\nRecent TX:\n" + "\n".join(tx_links)
             )
             return {"success": True, "address": str(public_key), "balanceLamports": balance, "tokens": tokens,
