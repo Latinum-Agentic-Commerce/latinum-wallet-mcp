@@ -1,7 +1,7 @@
 # 🔐 Latinum Wallet MCP
 
 [https://latinum.ai](https://latinum.ai)   
-[Latinum Tutorial](https://latinum.ai/articles/latinum-wallet)
+[Latinum Tutorial](https://latinum.ai/article/latinum-wallet)
 
 A **Model Context Protocol (MCP)** server that enables AI agents (like Claude or Cursor) to pay for services through HTTP 402 requests and MCP tools.
 
@@ -101,4 +101,4 @@ python3 -m twine upload dist/*
 
 Let us know if you'd like to contribute, suggest improvements, or report issues.
 
-**Join our community:** [WhatsApp Group](https://chat.whatsapp.com/Ever8ohOJRE3D6r5bLPViQ)
+**Join our community:** [Telegram Group](https://t.me/LatinumAgenticCommerce)
