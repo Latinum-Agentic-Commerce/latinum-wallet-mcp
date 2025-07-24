@@ -5,6 +5,9 @@
 
 import base64
 import os
+import sys
+import logging
+import json
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, List
 from importlib.metadata import version, PackageNotFoundError
@@ -30,6 +33,8 @@ from spl.token.instructions import (
     TransferCheckedParams,
 )
 
+logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='[%(levelname)s] %(message)s')
+
 # Known token mint addresses and their labels
 KNOWN_TOKENS = {
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
@@ -39,64 +44,11 @@ KNOWN_TOKENS = {
     'EchesyfXePKdLtoiZSL8pBe8Myagyy8ZRqsACNCFGnvp': 'FIDA',
     'So11111111111111111111111111111111111111112': 'wSOL',
 }
-
-
-def get_token_label(mint: str, client: Client) -> str:
-    """
-    Get a human-readable token label from a mint address.
-    
-    Args:
-        mint: The mint address as a string
-        client: Solana RPC client
-        
-    Returns:
-        Token symbol/label or shortened mint address as fallback
-    """
-    # Check known tokens first
-    if mint in KNOWN_TOKENS:
-        return KNOWN_TOKENS[mint]
-    
-    try:
-        # Try to fetch token metadata from the mint account
-        mint_pubkey = Pubkey.from_string(mint)
-        mint_info = client.get_account_info(mint_pubkey)
-        
-        if mint_info.value and mint_info.value.data:
-            # For now, we can't easily parse metadata without additional libraries
-            # This would require the Metaplex metadata program parsing
-            pass
-        
-        # Fallback: return shortened mint address
-        return mint[:8] + '...'
-    except Exception as e:
-        print(f"[Solana] Could not fetch token metadata for {mint}: {e}")
-        return mint[:8] + '...'
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 🔧  Configuration & helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_NETWORK = "devnet"  # used only when caller omits `network`
-
-RPC_URLS: Dict[str, str] = {
-    "mainnet": "https://api.mainnet-beta.solana.com",
-    "devnet": "https://api.devnet.solana.com",
-    "testnet": "https://api.testnet.solana.com",
-}
-
-
-# Explorer URL helper (base differs by cluster)
-
-def explorer_tx_url(signature: str, network: str) -> str:
-    if network == "mainnet":
-        return f"https://explorer.solana.com/tx/{signature}"
-    return f"https://explorer.solana.com/tx/{signature}?cluster={network}"
-
-
-def get_client(network: str) -> Client:
-    return Client(RPC_URLS.get(network, RPC_URLS[DEFAULT_NETWORK]))
-
+MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com"
 
 SERVICE_NAME = "latinum-wallet-mcp"
 KEY_NAME = "latinum-key"
@@ -110,11 +62,11 @@ TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5
 
 PRIVATE_KEY_BASE58 = keyring.get_password(SERVICE_NAME, KEY_NAME)
 if PRIVATE_KEY_BASE58:
-    print("Loaded existing private key from keyring.")
+    logging.info("Loaded existing private key from keyring.")
     secret_bytes = base58.b58decode(PRIVATE_KEY_BASE58)
     keypair = Keypair.from_bytes(secret_bytes)
 else:
-    print("No key found. Generating new wallet…")
+    logging.info("No key found. Generating new wallet…")
     seed = os.urandom(32)
     keypair = Keypair.from_seed(seed)
     PRIVATE_KEY_BASE58 = base58.b58encode(bytes(keypair)).decode()
@@ -122,28 +74,13 @@ else:
 
 public_key = keypair.pubkey()
 
+def explorer_tx_url(signature: str) -> str:
+    return f"https://explorer.solana.com/tx/{signature}"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 💧 Optional devnet airdrop (runs once on startup)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def maybe_airdrop():
-    client = get_client("devnet")
-    balance = client.get_balance(public_key).value
-    if balance < AIR_DROP_THRESHOLD:
-        try:
-            tx_sig = client.request_airdrop(public_key, AIR_DROP_AMOUNT)["result"]
-            print(f"Devnet airdrop requested (tx {tx_sig})")
-        except Exception as exc:
-            print(f"Devnet airdrop failed: {exc}")
-
-
-maybe_airdrop()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ℹ️  Utility functions
-# ──────────────────────────────────────────────────────────────────────────────
+def get_token_label(mint: str, client: Client) -> str:
+    if mint in KNOWN_TOKENS:
+        return KNOWN_TOKENS[mint]
+    return mint[:8] + '...'
 
 def lamports_to_sol(lamports: int) -> float:
     return lamports / 1_000_000_000
@@ -177,231 +114,281 @@ def fetch_token_balances(client: Client, owner: Pubkey) -> List[dict]:
 
 def get_token_decimals(client: Client, mint_address: Pubkey) -> int:
     resp = client.get_account_info(mint_address)
-    if not resp.value:
-        raise Exception(f"Mint account {mint_address} not found")
+    return MINT_LAYOUT.parse(resp.value.data).decimals
 
-    decimals = MINT_LAYOUT.parse(resp.value.data).decimals
-
-    return decimals
-
-
-def print_wallet_info(network: Optional[str] = None):
+def print_wallet_info():
     # Get package version
     try:
         pkg_version = version("latinum-wallet-mcp")
     except PackageNotFoundError:
         pkg_version = "development"
     
-    print(f"\nWallet Information - Version {pkg_version}")
-    print(f"Public Key: {public_key}")
+    logging.info(f"\nWallet Information - Version {pkg_version}")
+    logging.info(f"Public Key: {public_key}")
     
-    # Check both mainnet and devnet
-    networks = ["mainnet", "devnet"]
-    if network:
-        networks = [network.lower()]
-    
-    for net in networks:
-        client = get_client(net)
+    client = Client(MAINNET_RPC_URL)
         
-        print(f"\n--- {net.upper()} ---")
-        
-        balance_lamports = client.get_balance(public_key).value
-        sol_label = "SOL" if net == "mainnet" else "DEV SOL"
-        print(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} {sol_label})")
+    balance_lamports = client.get_balance(public_key).value
+    logging.info(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} SOL)")
 
-        # Display SPL token balances
-        tokens = fetch_token_balances(client, public_key)
-        if tokens:
-            print("Token Balances:")
-            for t in tokens:
-                token_label = get_token_label(t['mint'], client)
-                print(f"  {t['uiAmount']} {token_label} ({t['mint']})")
+    # Display SPL token balances
+    tokens = fetch_token_balances(client, public_key)
+    if tokens:
+        logging.info("Token Balances:")
+        for t in tokens:
+            token_label = get_token_label(t['mint'], client)
+            logging.info(f"  {t['uiAmount']} {token_label} ({t['mint']})")
+    else:
+        logging.info("No SPL Token balances found.")
+
+    # Recent transactions
+    try:
+        logging.info("Recent Transactions:")
+        sigs = client.get_signatures_for_address(public_key).value
+        if not sigs:
+            logging.info("No recent transactions found.")
         else:
-            print("No SPL Token balances found.")
-
-        # Recent transactions
-        try:
-            print("Recent Transactions:")
-            sigs = client.get_signatures_for_address(public_key).value
-            if not sigs:
-                print("No recent transactions found.")
-            else:
-                for s in sigs:
-                    print(explorer_tx_url(s.signature, net))
-        except Exception as exc:
-            print(f"Failed to fetch transactions: {exc}")
+            for s in sigs:
+                logging.info(explorer_tx_url(s.signature))
+    except Exception as exc:
+        logging.info(f"Failed to fetch transactions: {exc}")
 
 
-print_wallet_info()
-
+if len(sys.argv) > 1 and sys.argv[1] == "balance":
+    print_wallet_info()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 🛰️  MCP Server & tools
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_mcp_wallet_server() -> Server:
-    """Create and return the MCP server instance."""
-
-    async def get_signed_transaction(
-            targetWallet: str,
-            amountAtomic: int,
-            mint: Optional[str] = None,
-            network: Optional[str] = None,
+async def get_signed_transaction(
+    targetWallet: str,
+    amountAtomic: int,
+    mint: Optional[str] = None
     ) -> dict:
-        net = (network or DEFAULT_NETWORK).lower()
-        client = get_client(net)  # synchronous Client
-        try:
-            # ------------------------------------------------------------------
-            # 1️⃣  Balance check
-            # ------------------------------------------------------------------
-            if mint is None:  # SOL
-                current_balance = client.get_balance(public_key).value
-                if current_balance < amountAtomic:
-                    short = amountAtomic - current_balance
-                    return {
-                        "success": False,
-                        "message": (f"Insufficient SOL balance: need {amountAtomic} "
-                                    f"lamports, have {current_balance} "
-                                    f"(short by {short}).")
-                    }
-            else:  # SPL token
-                mint_pk = Pubkey.from_string(mint)
-                # reuse your helper to get **all** SPL balances
-                all_tokens = fetch_token_balances(client, public_key)
-                tok_entry = next((t for t in all_tokens if t["mint"] == str(mint_pk)), None)
+    """Sign a SOL or SPL token transfer transaction."""
 
-                if not tok_entry:
-                    return {
-                        "success": False,
-                        "message": f"Insufficient balance: wallet holds 0 of token {mint}."
-                    }
+    logging.info(f"[Tool] get_signed_transaction called with: targetWallet={targetWallet}, "
+                 f"amountAtomic={amountAtomic}, mint={mint}")
 
-                wallet_atomic = _ui_to_atomic(tok_entry["uiAmount"], tok_entry["decimals"])
-                if wallet_atomic < amountAtomic:
-                    short = amountAtomic - wallet_atomic
-                    return {
-                        "success": False,
-                        "message": (f"Insufficient balance: need {amountAtomic} atomic "
-                                    f"units of {mint} but wallet holds {wallet_atomic} "
-                                    f"(short by {short}).")
-                    }
+    if not targetWallet or not isinstance(targetWallet, str):
+        logging.warning("[Tool] Missing or invalid targetWallet.")
+        return {
+            "success": False,
+            "message": "`targetWallet` is required and must be a string."
+        }
 
-            # ------------------------------------------------------------------
-            # 2️⃣  Build + sign transaction  (unchanged from your version)
-            # ------------------------------------------------------------------
-            to_pubkey = Pubkey.from_string(targetWallet)
-            recent_blockhash_resp = client.get_latest_blockhash()
-            blockhash = recent_blockhash_resp.value.blockhash
-            ixs = []
+    if amountAtomic is None or not isinstance(amountAtomic, int) or amountAtomic <= 0:
+        logging.warning("[Tool] Invalid amountAtomic.")
+        return {
+            "success": False,
+            "message": "`amountAtomic` must be a positive integer."
+        }
 
-            if mint is None:
-                ixs.append(transfer(TransferParams(from_pubkey=public_key,
-                                                   to_pubkey=to_pubkey,
-                                                   lamports=amountAtomic)))
-            else:
-                mint_pubkey = Pubkey.from_string(mint)
-                sender_token_account = get_associated_token_address(public_key, mint_pubkey)
-                recipient_token_account = get_associated_token_address(to_pubkey, mint_pubkey)
-                token_decimals = get_token_decimals(client, mint_pubkey)
-                print(f"sender_token_account {sender_token_account}")
-                print(f"recipient_token_account {recipient_token_account}")
+    try:
+        client: Client = Client(MAINNET_RPC_URL)
 
-                create_ata_ix = create_idempotent_associated_token_account(
-                    payer=public_key,
-                    owner=to_pubkey,
-                    mint=mint_pubkey
-                )
-                ixs.append(create_ata_ix)
+        # 1️⃣ Balance check
+        if mint is None:
+            logging.info("[Tool] Checking SOL balance...")
+            current_balance = client.get_balance(public_key).value
+            logging.info(f"[Tool] Current SOL balance: {current_balance} lamports")
 
-                ixs.append(transfer_checked(TransferCheckedParams(
-                    program_id=TOKEN_PROGRAM_ID,
-                    source=sender_token_account,
-                    mint=mint_pubkey,
-                    dest=recipient_token_account,
-                    owner=public_key,
-                    amount=amountAtomic,
-                    decimals=token_decimals,
-                )))
+            if current_balance < amountAtomic:
+                short = amountAtomic - current_balance
+                return {
+                    "success": False,
+                    "message": (f"Insufficient SOL balance: need {amountAtomic} lamports, "
+                                f"have {current_balance} (short by {short}).")
+                }
+        else:
+            logging.info(f"[Tool] Checking SPL balance for mint: {mint}")
+            all_tokens = fetch_token_balances(client, public_key)
+            tok_entry = next((t for t in all_tokens if t["mint"] == mint), None)
+            if not tok_entry:
+                logging.warning("[Tool] Token not found in wallet.")
+                return {"success": False, "message": f"Insufficient balance for token {mint}."}
 
-            msg = Message(ixs, public_key)
-            tx = Transaction([keypair], msg, blockhash)
-            raw_tx = bytes(tx)
-            signed_b64 = base64.b64encode(raw_tx).decode("utf-8")
+            wallet_atomic = _ui_to_atomic(tok_entry["uiAmount"], tok_entry["decimals"])
+            logging.info(f"[Tool] SPL token balance: {wallet_atomic} atomic units")
 
-            return {
-                "success": True,
-                "signedTransactionB64": signed_b64,
-                "message": f"Signed tx for {net}:\n{signed_b64}",
-            }
+            if wallet_atomic < amountAtomic:
+                short = amountAtomic - wallet_atomic
+                return {
+                    "success": False,
+                    "message": (f"Insufficient balance: need {amountAtomic} atomic units of {mint}, "
+                                f"but wallet holds {wallet_atomic} (short by {short}).")
+                }
 
-        except Exception as exc:
-            return {"success": False, "message": f"Error: {exc}"}
+        # 2️⃣ Build & Sign Transaction
+        logging.info(f"[Tool] Building transaction for target: {targetWallet}")
+        to_pubkey = Pubkey.from_string(targetWallet)
+        blockhash = client.get_latest_blockhash().value.blockhash
+        logging.info(f"[Tool] Latest blockhash: {blockhash}")
+        ixs = []
 
-    # ▸▸▸ TOOL 2 – Wallet info (SOL + tokens)
-    async def get_wallet_info(network: Optional[str] = None) -> dict:
-        net = (network or "mainnet").lower()
-        client = get_client(net)
-        try:
-            balance = client.get_balance(public_key).value
-            tokens = fetch_token_balances(client, public_key)
-            sigs = client.get_signatures_for_address(public_key, limit=5).value
-            tx_links = [explorer_tx_url(s.signature, net) for s in sigs] if sigs else ["No recent transactions."]
-            
-            # Format token balances with labels (show first)
-            token_lines = []
-            for t in tokens:
-                token_label = get_token_label(t['mint'], client)
-                token_lines.append(f" • {t['uiAmount']} {token_label} ({t['mint']})")
-            
-            # Build balance text (SOL and dev SOL only if present)
-            balance_lines = []
-            if balance > 0:
-                balance_lines.append(f" • {lamports_to_sol(balance):.6f} SOL")
-            
-            # Check for devnet balance if we're on mainnet
-            if net == "mainnet":
-                try:
-                    dev_client = get_client("devnet")
-                    dev_balance = dev_client.get_balance(public_key).value
-                    if dev_balance > 0:
-                        balance_lines.append(f" • {lamports_to_sol(dev_balance):.6f} DEV SOL")
-                except:
-                    pass
-            
-            # Build message with tokens first, then balances
-            all_balances = token_lines + balance_lines
-            balances_text = "\n".join(all_balances) if all_balances else "None"
-            
-            msg = (
-                    f"Address: {public_key}\n\n"
-                    f"Balances:\n{balances_text}" +
-                    "\n\nRecent TX:\n" + "\n".join(tx_links)
-            )
-            return {"success": True, "address": str(public_key), "balanceLamports": balance, "tokens": tokens,
-                    "transactions": tx_links, "message": msg}
-        except Exception as exc:
-            return {"success": False, "message": f"Error: {exc}"}
+        if mint is None:
+            ixs.append(transfer(TransferParams(
+                from_pubkey=public_key,
+                to_pubkey=to_pubkey,
+                lamports=amountAtomic
+            )))
+        else:
+            mint_pubkey = Pubkey.from_string(mint)
+            sender_token_account = get_associated_token_address(public_key, mint_pubkey)
+            recipient_token_account = get_associated_token_address(to_pubkey, mint_pubkey)
+            token_decimals = get_token_decimals(client, mint_pubkey)
 
+            logging.info(f"[Tool] sender_token_account={sender_token_account}")
+            logging.info(f"[Tool] recipient_token_account={recipient_token_account}")
+            logging.info(f"[Tool] token_decimals={token_decimals}")
+
+            ixs.append(create_idempotent_associated_token_account(
+                payer=public_key,
+                owner=to_pubkey,
+                mint=mint_pubkey
+            ))
+
+            ixs.append(transfer_checked(TransferCheckedParams(
+                program_id=TOKEN_PROGRAM_ID,
+                source=sender_token_account,
+                mint=mint_pubkey,
+                dest=recipient_token_account,
+                owner=public_key,
+                amount=amountAtomic,
+                decimals=token_decimals
+            )))
+
+        msg = Message(ixs, public_key)
+        tx = Transaction([keypair], msg, blockhash)
+        signed_b64 = base64.b64encode(bytes(tx)).decode("utf-8")
+        logging.info(f"[Tool] Transaction signed successfully")
+
+        return {
+            "success": True,
+            "signedTransactionB64": signed_b64,
+            "message": f"signedTransactionB64: {signed_b64}",
+        }
+
+    except Exception as exc:
+        logging.exception(f"[Tool] Exception during transaction creation: {exc}")
+        return {
+            "success": False,
+            "message": f"Unexpected error: {exc}"
+        }
+
+ # ▸▸▸ TOOL 2 – Wallet info (SOL + tokens)
+async def get_wallet_info(_: Optional[str] = None) -> dict:
+    """Return wallet address, balances, and recent transactions."""
+
+    try:
+        client = Client(MAINNET_RPC_URL)
+        logging.info("[Tool] Fetching SOL balance...")
+        balance_resp = client.get_balance(public_key)
+        balance = balance_resp.value if balance_resp and balance_resp.value else 0
+
+        logging.info(f"[Tool] SOL balance: {balance} lamports")
+
+        logging.info("[Tool] Fetching SPL tokens...")
+        tokens = fetch_token_balances(client, public_key)
+        logging.info(f"[Tool] Found {len(tokens)} SPL tokens")
+
+        tx_links = []
+        if balance > 0 or tokens:
+            logging.info("[Tool] Fetching recent transactions...")
+            try:
+                sigs = client.get_signatures_for_address(public_key, limit=5).value
+                tx_links = [explorer_tx_url(s.signature) for s in sigs] if sigs else []
+            except Exception as tx_err:
+                logging.warning(f"Failed to fetch transactions: {tx_err}")
+                tx_links = []
+
+        # Format balances and tokens
+        token_lines = [
+            f" • {t['uiAmount']} {get_token_label(t['mint'], client)} ({t['mint']})"
+            for t in tokens
+        ]
+
+        balance_lines = []
+        if balance > 0:
+            balance_lines.append(f" • {lamports_to_sol(balance):.6f} SOL")
+
+        balances_text = "\n".join(balance_lines + token_lines) if (token_lines or balance_lines) else "None"
+        tx_section = "\n".join(tx_links) if tx_links else "No recent transactions."
+
+        msg = (
+            f"Address: {public_key}\n\n"
+            f"Balances:\n{balances_text}\n\n"
+            f"Recent TX:\n{tx_section}"
+        )
+
+        return {
+            "success": True,
+            "address": str(public_key),
+            "balanceLamports": balance,
+            "tokens": tokens,
+            "transactions": tx_links,
+            "message": msg,
+        }
+
+    except Exception as exc:
+        logging.exception(f"[Tool] Exception in get_wallet_info: {exc}")
+        return {"success": False, "message": f"Error: {exc}"}
+
+def build_mcp_wallet_server() -> Server:
     wallet_tool = FunctionTool(get_signed_transaction)
     info_tool = FunctionTool(get_wallet_info)
-
     server = Server("latinum-wallet-mcp")
 
     @server.list_tools()
     async def list_tools():
+        logging.info("[MCP] Listing available tools.")
         return [adk_to_mcp_tool_type(wallet_tool), adk_to_mcp_tool_type(info_tool)]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
+        logging.info(f"[MCP] call_tool invoked: name={name}, args={json.dumps(arguments)}")
+
         try:
+            result = None
+
             if name == wallet_tool.name:
                 result = await wallet_tool.run_async(args=arguments, tool_context=None)
+                logging.info(f"[MCP] get_signed_transaction result raw: {repr(result)}")
+
+                if not isinstance(result, dict):
+                    logging.error(f"[MCP] ⚠️ Invalid result from get_signed_transaction: expected dict but got {type(result)}")
+                    return [mcp_types.TextContent(type="text", text="❌ Internal error: invalid response format")]
+
+                logging.info(f"[MCP] get_signed_transaction result JSON: {json.dumps(result)}")
+
+                if result.get("success"):
+                    return [mcp_types.TextContent(type="text", text=result.get("message", "✅ Success"))]
+                else:
+                    return [mcp_types.TextContent(type="text", text=result.get("message", "❌ Wallet transaction failed."))]
+
             elif name == info_tool.name:
                 result = await info_tool.run_async(args=arguments, tool_context=None)
-            else:
-                return [mcp_types.TextContent(type="text", text="Tool not found")]  # unreachable with correct calls
-            return [mcp_types.TextContent(type="text", text=result.get("message", "Unexpected error."))]
-        except Exception as exc:
-            return [mcp_types.TextContent(type="text", text=f"Internal error: {exc}")]
+                logging.info(f"[MCP] get_wallet_info result raw: {repr(result)}")
+
+                if not isinstance(result, dict):
+                    logging.error(f"[MCP] ⚠️ Invalid result from get_wallet_info: expected dict but got {type(result)}")
+                    return [mcp_types.TextContent(type="text", text="❌ Internal error: invalid response format")]
+
+                logging.info(f"[MCP] get_wallet_info result JSON: {json.dumps(result)}")
+
+                if result.get("success"):
+                    return [mcp_types.TextContent(type="text", text=result.get("message", "✅ Success"))]
+                else:
+                    return [mcp_types.TextContent(type="text", text=result.get("message", "❌ Failed to fetch wallet info."))]
+
+            logging.warning(f"[MCP] Unknown tool name: {name}")
+            return [mcp_types.TextContent(type="text", text=f"❌ Tool not found: {name}")]
+
+        except Exception as e:
+            logging.exception(f"[MCP] Exception during call_tool execution for '{name}': {e}")
+            return [mcp_types.TextContent(type="text", text=f"❌ Unexpected error: {e}")]
 
     return server
+
+__all__ = ["build_mcp_wallet_server", "get_signed_transaction", "get_wallet_info"]

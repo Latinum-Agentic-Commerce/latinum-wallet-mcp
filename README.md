@@ -65,8 +65,8 @@ Add the following configuration:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
-python3 -m latinum_wallet_mcp.server_stdio
+pip install --upgrade --upgrade-strategy eager -r requirements.txt
+python3 -m latinum_wallet_mcp.server_stdio balance
 ```
 
 You will get something like:
@@ -83,7 +83,7 @@ https://explorer.solana.com/tx/3MHjT3tEuGUj58G3BYbiWqFqGDaYvwfRnCVrtwC8ZPCKkpGmy
 
 To install your local build as a CLI for testing with Claude:
 ```bash
-pip install --editable -f .
+pip install --editable .
 ```
 
 # 📑 PyPI Publishing
