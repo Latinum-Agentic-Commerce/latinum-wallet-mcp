@@ -154,8 +154,7 @@ def print_wallet_info():
         logging.info(f"Failed to fetch transactions: {exc}")
 
 
-if len(sys.argv) > 1 and sys.argv[1] == "balance":
-    print_wallet_info()
+print_wallet_info()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 🛰️  MCP Server & tools

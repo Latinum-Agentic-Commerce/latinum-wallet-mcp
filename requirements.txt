@@ -7,4 +7,6 @@ keyring
 base58
 solana
 solders
+build
+twine
 deprecated # needed by Google ADK but not in requirments

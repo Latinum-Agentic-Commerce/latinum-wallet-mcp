@@ -66,7 +66,7 @@ Add the following configuration:
 python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install --upgrade --upgrade-strategy eager -r requirements.txt
-python3 -m latinum_wallet_mcp.server_stdio balance
+python3 -m latinum_wallet_mcp.server_stdio
 ```
 
 You will get something like:
@@ -93,9 +93,11 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 rm -rf dist/ build/ *.egg-info
-python -m build
+python3 -m build
 python3 -m twine upload dist/*
 ```
+
+See the output here: https://pypi.org/project/latinum-wallet-mcp/
 
 ---
 
