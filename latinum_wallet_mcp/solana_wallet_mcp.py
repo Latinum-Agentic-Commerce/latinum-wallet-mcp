@@ -21,6 +21,9 @@ from mcp.server.lowlevel import Server
 from solana.rpc.api import Client
 from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
+from solders.transaction import VersionedTransaction
+from solders.message import MessageV0, to_bytes_versioned
+from solders.null_signer import NullSigner
 from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
@@ -122,12 +125,12 @@ def print_wallet_info():
         pkg_version = version("latinum-wallet-mcp")
     except PackageNotFoundError:
         pkg_version = "development"
-    
+
     logging.info(f"\nWallet Information - Version {pkg_version}")
     logging.info(f"Public Key: {public_key}")
-    
+
     client = Client(MAINNET_RPC_URL)
-        
+
     balance_lamports = client.get_balance(public_key).value
     logging.info(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} SOL)")
 
@@ -165,6 +168,7 @@ async def get_signed_transaction(
     amountAtomic: int,
     mint: Optional[str] = None
     ) -> dict:
+    """Builds and signs a partial transaction to be completed by backend fee payer."""
     """Sign a SOL or SPL token transfer transaction."""
 
     logging.info(f"[Tool] get_signed_transaction called with: targetWallet={targetWallet}, "
@@ -219,11 +223,24 @@ async def get_signed_transaction(
                                 f"but wallet holds {wallet_atomic} (short by {short}).")
                 }
 
-        # 2️⃣ Build & Sign Transaction
-        logging.info(f"[Tool] Building transaction for target: {targetWallet}")
+
+        # 2️⃣ Fetch fee payer from backend
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            # This request endpoint should exist on latinum server
+            async with session.get("http://facilitator.latinum.ai/api/payer-address?chain=solana") as resp:
+                if resp.status != 200:
+                    return {"success": False, "message": "Failed to fetch fee payer address."}
+                fee_payer_data = await resp.json()
+                fee_payer_str = fee_payer_data.get("feePayer")
+                if not fee_payer_str:
+                    return {"success": False, "message": "No fee payer in response."}
+
+        fee_payer_pubkey = Pubkey.from_string(fee_payer_str)
+
+        # 3️⃣ Build transaction
         to_pubkey = Pubkey.from_string(targetWallet)
         blockhash = client.get_latest_blockhash().value.blockhash
-        logging.info(f"[Tool] Latest blockhash: {blockhash}")
         ixs = []
 
         if mint is None:
@@ -238,12 +255,8 @@ async def get_signed_transaction(
             recipient_token_account = get_associated_token_address(to_pubkey, mint_pubkey)
             token_decimals = get_token_decimals(client, mint_pubkey)
 
-            logging.info(f"[Tool] sender_token_account={sender_token_account}")
-            logging.info(f"[Tool] recipient_token_account={recipient_token_account}")
-            logging.info(f"[Tool] token_decimals={token_decimals}")
-
             ixs.append(create_idempotent_associated_token_account(
-                payer=public_key,
+                payer=fee_payer_pubkey,  # backend pays gas
                 owner=to_pubkey,
                 mint=mint_pubkey
             ))
@@ -258,15 +271,23 @@ async def get_signed_transaction(
                 decimals=token_decimals
             )))
 
-        msg = Message(ixs, public_key)
-        tx = Transaction([keypair], msg, blockhash)
-        signed_b64 = base64.b64encode(bytes(tx)).decode("utf-8")
-        logging.info(f"[Tool] Transaction signed successfully")
+        message = MessageV0.try_compile(
+            payer=fee_payer_pubkey,
+            instructions=ixs,
+            address_lookup_table_accounts=[],
+            recent_blockhash=blockhash
+        )
 
+        # sign with a real signer and a null signer
+        user_signature = keypair.sign_message(to_bytes_versioned(message))
+        user_sig_b64 = base64.b64encode(bytes(user_signature)).decode("utf-8")
+        message_b64 = base64.b64encode(to_bytes_versioned(message)).decode("utf-8")
+        request_param = str(public_key) + '::' + message_b64 + "::" + user_sig_b64
+        logging.info(f"request param = {request_param}, ")
         return {
             "success": True,
-            "signedTransactionB64": signed_b64,
-            "message": f"signedTransactionB64: {signed_b64}",
+            "signedTransactionB64": request_param,
+            "message": "Transaction signed by sender, ready for backend to complete."
         }
 
     except Exception as exc:
