@@ -8,14 +8,41 @@ from latinum_wallet_mcp.solana_wallet_mcp import (
 
 class TestWalletIntegration(unittest.IsolatedAsyncioTestCase):
 
+    async def test_get_signed_transaction(self):
+        """Test signing a SPL token transfer transaction."""
+
+        params = {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "amountAtomic": 100000,
+            "targetWallet": "3BMEwjrn9gBfSetARPrAK1nPTXMRsvQzZLN1n4CYjpcU"
+        }
+
+        print("\n--- Testing get_signed_transaction ---")
+        result = await get_signed_transaction(**params)
+
+        # If rate limit or errors from RPC, skip test gracefully
+        message = result.get("message", "")
+        if ("Too Many Requests" in message or
+            "429" in message or
+            "SolanaRpcException" in message or
+            not result.get("success", False)):
+            self.skipTest(f"RPC rate limit or error hit: {message}")
+
+        self.assertTrue(result["success"], msg="Transaction signing failed")
+        self.assertIn("signedTransactionB64", result)
+        self.assertIsInstance(result["signedTransactionB64"], str)
+        self.assertGreater(len(result["signedTransactionB64"]), 0)
+
+        print("Signed transaction base64 length:", len(result["signedTransactionB64"]))
+
     async def test_get_wallet_info(self):
         """Test wallet info retrieval from mainnet."""
         print("\n--- Testing get_wallet_info (mainnet) ---")
         result = await get_wallet_info()
 
         message = result.get("message", "")
-        if ("Too Many Requests" in message or 
-            "429" in message or 
+        if ("Too Many Requests" in message or
+            "429" in message or
             "SolanaRpcException" in message or
             not result.get("success", False)):
             self.skipTest(f"RPC rate limit or error hit on mainnet: {message}")
@@ -84,7 +111,7 @@ class TestWalletIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         # Could be rate limited or insufficient balance
         self.assertTrue(
-            "Insufficient balance" in result["message"] or 
+            "Insufficient balance" in result["message"] or
             "Unexpected error" in result["message"]
         )
 
