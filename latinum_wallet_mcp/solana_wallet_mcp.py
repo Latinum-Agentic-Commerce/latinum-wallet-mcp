@@ -9,8 +9,7 @@ import sys
 import logging
 import json
 from decimal import Decimal, ROUND_DOWN
-from typing import Optional, Dict, List
-from importlib.metadata import version, PackageNotFoundError
+from typing import Optional, List
 
 import base58
 import keyring
@@ -21,13 +20,10 @@ from mcp.server.lowlevel import Server
 from solana.rpc.api import Client
 from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
-from solders.transaction import VersionedTransaction
-from solders.message import MessageV0, to_bytes_versioned
-from solders.null_signer import NullSigner
-from solders.message import Message
+from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
-from solders.transaction import Transaction
+from solders.transaction import VersionedTransaction
 from spl.token._layouts import MINT_LAYOUT
 from spl.token.instructions import (
     get_associated_token_address,
@@ -35,6 +31,8 @@ from spl.token.instructions import (
     transfer_checked,
     TransferCheckedParams,
 )
+
+from latinum_wallet_mcp.utils import check_for_update
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='[%(levelname)s] %(message)s')
 
@@ -120,14 +118,14 @@ def get_token_decimals(client: Client, mint_address: Pubkey) -> int:
     return MINT_LAYOUT.parse(resp.value.data).decimals
 
 def print_wallet_info():
-    # Get package version
-    try:
-        pkg_version = version("latinum-wallet-mcp")
-    except PackageNotFoundError:
-        pkg_version = "development"
-
-    logging.info(f"\nWallet Information - Version {pkg_version}")
+    has_update, message = check_for_update()
+    logging.info(message)
+    
     logging.info(f"Public Key: {public_key}")
+
+
+    if "--show-private-key" in sys.argv:
+        logging.info(f"Private Key (base58): {PRIVATE_KEY_BASE58}")
 
     client = Client(MAINNET_RPC_URL)
 
@@ -331,7 +329,9 @@ async def get_wallet_info(_: Optional[str] = None) -> dict:
         balances_text = "\n".join(balance_lines + token_lines) if (token_lines or balance_lines) else "None"
         tx_section = "\n".join(tx_links) if tx_links else "No recent transactions."
 
+        has_update, version = check_for_update()
         msg = (
+            f"{version}\n\n"
             f"Address: {public_key}\n\n"
             f"Balances:\n{balances_text}\n\n"
             f"Recent TX:\n{tx_section}"
