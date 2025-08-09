@@ -278,24 +278,19 @@ async def get_signed_transaction(
             recent_blockhash=blockhash
         )
 
-        # sign with a real signer and a null signer
-        user_signature = keypair.sign_message(to_bytes_versioned(message))
-        user_sig_b64 = base64.b64encode(bytes(user_signature)).decode("utf-8")
-        message_b64 = base64.b64encode(to_bytes_versioned(message)).decode("utf-8")
-        request_param = str(public_key) + '::' + message_b64 + "::" + user_sig_b64
-        logging.info(f"request param = {request_param}, ")
+        # Create VersionedTransaction and partially sign with user
+        tx = VersionedTransaction(message, [keypair])  # user signs
+        tx_b64 = base64.b64encode(bytes(tx)).decode("utf-8")
+
         return {
             "success": True,
-            "signedTransactionB64": request_param,
-            "message": "Transaction signed by sender, ready for backend to complete."
+            "signedTransactionB64": tx_b64,
+            "message": f"signedTransactionB64: {tx_b64}",
         }
 
     except Exception as exc:
         logging.exception(f"[Tool] Exception during transaction creation: {exc}")
-        return {
-            "success": False,
-            "message": f"Unexpected error: {exc}"
-        }
+        return {"success": False, "message": f"Unexpected error: {exc}"}
 
  # ▸▸▸ TOOL 2 – Wallet info (SOL + tokens)
 async def get_wallet_info(_: Optional[str] = None) -> dict:
