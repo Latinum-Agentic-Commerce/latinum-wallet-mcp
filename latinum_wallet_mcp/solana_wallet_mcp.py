@@ -21,6 +21,7 @@ from mcp.server.lowlevel import Server
 from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.message import MessageV0
+from solders.null_signer import NullSigner
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
@@ -226,7 +227,7 @@ async def get_signed_transaction(
             token_decimals = get_token_decimals(client, mint_pubkey)
 
             ixs.append(create_idempotent_associated_token_account(
-                payer=public_key,
+                payer=FEE_PAYER_PUBKEY,
                 owner=to_pubkey,
                 mint=mint_pubkey
             ))
@@ -249,7 +250,11 @@ async def get_signed_transaction(
         )
 
         # Create VersionedTransaction and partially sign with user
-        tx = VersionedTransaction(message, [keypair])  # user signs
+        tx = VersionedTransaction(message, [keypair, NullSigner(FEE_PAYER_PUBKEY)])
+
+        # if FEE_PAYER_PUBKEY == public_key:
+        #   tx = VersionedTransaction(message, [keypair])
+
         tx_b64 = base64.b64encode(bytes(tx)).decode("utf-8")
 
         return {
