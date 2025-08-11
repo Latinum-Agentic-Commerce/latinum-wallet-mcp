@@ -221,21 +221,6 @@ async def get_signed_transaction(
                                 f"but wallet holds {wallet_atomic} (short by {short}).")
                 }
 
-
-        # 2️⃣ Fetch fee payer from backend
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            # This request endpoint should exist on latinum server
-            async with session.get("http://facilitator.latinum.ai/api/payer-address?chain=solana") as resp:
-                if resp.status != 200:
-                    return {"success": False, "message": "Failed to fetch fee payer address."}
-                fee_payer_data = await resp.json()
-                fee_payer_str = fee_payer_data.get("feePayer")
-                if not fee_payer_str:
-                    return {"success": False, "message": "No fee payer in response."}
-
-        fee_payer_pubkey = Pubkey.from_string(fee_payer_str)
-
         # 3️⃣ Build transaction
         to_pubkey = Pubkey.from_string(targetWallet)
         blockhash = client.get_latest_blockhash().value.blockhash
@@ -254,7 +239,7 @@ async def get_signed_transaction(
             token_decimals = get_token_decimals(client, mint_pubkey)
 
             ixs.append(create_idempotent_associated_token_account(
-                payer=fee_payer_pubkey,  # backend pays gas
+                payer=public_key,
                 owner=to_pubkey,
                 mint=mint_pubkey
             ))
@@ -270,7 +255,7 @@ async def get_signed_transaction(
             )))
 
         message = MessageV0.try_compile(
-            payer=fee_payer_pubkey,
+            payer=public_key,
             instructions=ixs,
             address_lookup_table_accounts=[],
             recent_blockhash=blockhash
