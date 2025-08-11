@@ -9,7 +9,8 @@ import sys
 import logging
 import json
 from decimal import Decimal, ROUND_DOWN
-from typing import Optional, List
+import threading
+from typing import Optional
 
 import base58
 import keyring
@@ -18,12 +19,12 @@ from google.adk.tools.mcp_tool.conversion_utils import adk_to_mcp_tool_type
 from mcp import types as mcp_types
 from mcp.server.lowlevel import Server
 from solana.rpc.api import Client
-from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
 from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
+from spl.token.constants import TOKEN_PROGRAM_ID
 from spl.token._layouts import MINT_LAYOUT
 from spl.token.instructions import (
     get_associated_token_address,
@@ -32,7 +33,7 @@ from spl.token.instructions import (
     TransferCheckedParams,
 )
 
-from latinum_wallet_mcp.utils import check_for_update
+from latinum_wallet_mcp.utils import check_for_update, collect_and_send_wallet_log, explorer_tx_url, fetch_token_balances
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='[%(levelname)s] %(message)s')
 
@@ -50,12 +51,9 @@ KNOWN_TOKENS = {
 # ──────────────────────────────────────────────────────────────────────────────
 
 MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com"
-
 SERVICE_NAME = "latinum-wallet-mcp"
 KEY_NAME = "latinum-key"
-AIR_DROP_THRESHOLD = 100_000  # lamports
-AIR_DROP_AMOUNT = 10_000_000  # lamports
-TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+FEE_PAYER_PUBKEY = Pubkey.from_string("FkaedGoNxZ4Kx7x9H9yuUZXKXZ5DbQo5KxRj9BgTsYPE")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 🔑  Wallet setup (single key, reused across networks)
@@ -74,9 +72,6 @@ else:
     keyring.set_password(SERVICE_NAME, KEY_NAME, PRIVATE_KEY_BASE58)
 
 public_key = keypair.pubkey()
-
-def explorer_tx_url(signature: str) -> str:
-    return f"https://explorer.solana.com/tx/{signature}"
 
 def get_token_label(mint: str, client: Client) -> str:
     if mint in KNOWN_TOKENS:
@@ -100,59 +95,51 @@ def _ui_to_atomic(ui_amount: str, decimals: int) -> int:
                 * (10 ** decimals)).to_integral_value())
 
 
-def fetch_token_balances(client: Client, owner: Pubkey) -> List[dict]:
-    """Return a list of SPL‑token balances in UI units."""
-    opts = TokenAccountOpts(program_id=TOKEN_PROGRAM_ID, encoding="jsonParsed")
-    resp = client.get_token_accounts_by_owner_json_parsed(owner, opts)
-    tokens: List[dict] = []
-    for acc in resp.value:
-        info = acc.account.data.parsed["info"]
-        mint = info["mint"]
-        tkn_amt = info["tokenAmount"]
-        ui_amt = tkn_amt.get("uiAmountString") or str(int(tkn_amt["amount"]) / 10 ** tkn_amt["decimals"])
-        tokens.append({"mint": mint, "uiAmount": ui_amt, "decimals": tkn_amt["decimals"]})
-    return tokens
-
 def get_token_decimals(client: Client, mint_address: Pubkey) -> int:
     resp = client.get_account_info(mint_address)
     return MINT_LAYOUT.parse(resp.value.data).decimals
 
 def print_wallet_info():
     has_update, message = check_for_update()
-    logging.info(message)
+    if has_update:
+        logging.warning(message)
+    else:
+        logging.info(message)
     
     logging.info(f"Public Key: {public_key}")
-
 
     if "--show-private-key" in sys.argv:
         logging.info(f"Private Key (base58): {PRIVATE_KEY_BASE58}")
 
-    client = Client(MAINNET_RPC_URL)
+    if "--info" in sys.argv:
+        client = Client(MAINNET_RPC_URL)
 
-    balance_lamports = client.get_balance(public_key).value
-    logging.info(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} SOL)")
+        balance_lamports = client.get_balance(public_key).value
+        logging.info(f"Balance: {balance_lamports} lamports ({lamports_to_sol(balance_lamports):.9f} SOL)")
 
-    # Display SPL token balances
-    tokens = fetch_token_balances(client, public_key)
-    if tokens:
-        logging.info("Token Balances:")
-        for t in tokens:
-            token_label = get_token_label(t['mint'], client)
-            logging.info(f"  {t['uiAmount']} {token_label} ({t['mint']})")
-    else:
-        logging.info("No SPL Token balances found.")
-
-    # Recent transactions
-    try:
-        logging.info("Recent Transactions:")
-        sigs = client.get_signatures_for_address(public_key).value
-        if not sigs:
-            logging.info("No recent transactions found.")
+        # Display SPL token balances
+        tokens = fetch_token_balances(client, public_key)
+        if tokens:
+            logging.info("Token Balances:")
+            for t in tokens:
+                token_label = get_token_label(t['mint'], client)
+                logging.info(f"  {t['uiAmount']} {token_label} ({t['mint']})")
         else:
-            for s in sigs:
-                logging.info(explorer_tx_url(s.signature))
-    except Exception as exc:
-        logging.info(f"Failed to fetch transactions: {exc}")
+            logging.info("No SPL Token balances found.")
+
+        # Recent transactions
+        try:
+            logging.info("Recent Transactions:")
+            sigs = client.get_signatures_for_address(public_key).value
+            if not sigs:
+                logging.info("No recent transactions found.")
+            else:
+                for s in sigs:
+                    logging.info(explorer_tx_url(s.signature))
+        except Exception as exc:
+            logging.info(f"Failed to fetch transactions: {exc}")
+    else:
+        logging.info("Run with argument --info to see wallet information\n")
 
 
 print_wallet_info()
@@ -255,7 +242,7 @@ async def get_signed_transaction(
             )))
 
         message = MessageV0.try_compile(
-            payer=public_key,
+            payer=FEE_PAYER_PUBKEY,
             instructions=ixs,
             address_lookup_table_accounts=[],
             recent_blockhash=blockhash
@@ -336,6 +323,17 @@ async def get_wallet_info(_: Optional[str] = None) -> dict:
         return {"success": False, "message": f"Error: {exc}"}
 
 def build_mcp_wallet_server() -> Server:
+    def runner():
+        try:
+            collect_and_send_wallet_log(
+                api_base_url="https://facilitator.latinum.ai",
+                public_key=public_key
+            )
+        except Exception:
+            logging.exception("collect_and_send_wallet_log failed")
+
+    threading.Thread(target=runner, daemon=True, name="wallet-log").start()
+
     wallet_tool = FunctionTool(get_signed_transaction)
     info_tool = FunctionTool(get_wallet_info)
     server = Server("latinum-wallet-mcp")
