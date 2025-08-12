@@ -3,6 +3,7 @@
 # Get balance API require to pass the public key.
 # Need to save the public key in supabase
 
+import asyncio
 import base64
 import os
 import sys
@@ -332,6 +333,7 @@ def build_mcp_wallet_server() -> Server:
         try:
             collect_and_send_wallet_log(
                 api_base_url="https://facilitator.latinum.ai",
+                 #                api_base_url="http://localhost:3000",
                 public_key=public_key
             )
         except Exception:
@@ -395,3 +397,191 @@ def build_mcp_wallet_server() -> Server:
     return server
 
 __all__ = ["build_mcp_wallet_server", "get_signed_transaction", "get_wallet_info"]
+
+
+
+import asyncio
+import logging
+import webbrowser
+import wx
+from datetime import datetime
+
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # mainnet USDC
+
+
+def _extract_txid(url: str) -> str:
+    """
+    Turn an explorer URL like:
+      https://explorer.solana.com/tx/<SIG>?cluster=mainnet
+    into just the <SIG>.
+    """
+    if not url:
+        return ""
+    try:
+        after = url.split("/tx/", 1)[1]
+        return after.split("?", 1)[0].strip()
+    except Exception:
+        return url  # fallback: show whole string
+
+
+def show_wallet_ui(wallet_data: dict):
+    """
+    Expects `wallet_data` from get_wallet_info():
+
+    {
+        "success": True,
+        "address": "F...XYZ",
+        "balanceLamports": int,
+        "tokens": [{"mint": str, "uiAmount": str, "decimals": int}, ...],
+        "transactions": ["https://explorer.solana.com/tx/<SIG>?...", ...],
+        "message": str,
+    }
+    """
+
+    class WalletFrame(wx.Frame):
+        def __init__(self, data):
+            super().__init__(None, title="Latinum Wallet", size=(760, 560))
+            self.data = data
+            self.tx_urls: list[str] = data.get("transactions") or []
+            self._build_ui()
+            self.Centre()
+            self.Show()
+
+        # ---------------- UI ----------------
+        def _build_ui(self):
+            panel = wx.Panel(self)
+            root = wx.BoxSizer(wx.VERTICAL)
+
+            # Header
+            header = wx.BoxSizer(wx.HORIZONTAL)
+            title = wx.StaticText(panel, label="Latinum Wallet")
+            title.SetFont(wx.Font(18, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            header.Add(title, 0, wx.ALIGN_CENTER_VERTICAL)
+            header.AddStretchSpacer()
+            refresh_btn = wx.Button(panel, label="Refresh")
+            refresh_btn.Bind(wx.EVT_BUTTON, self.on_refresh)
+            header.Add(refresh_btn, 0)
+            root.Add(header, 0, wx.ALL | wx.EXPAND, 12)
+
+            # Address
+            addr_box = wx.StaticBox(panel, label="Address")
+            addr = wx.StaticBoxSizer(addr_box, wx.VERTICAL)
+            row = wx.BoxSizer(wx.HORIZONTAL)
+            self.addr_field = wx.TextCtrl(panel, value=self.data.get("address", ""), style=wx.TE_READONLY)
+            self.addr_field.SetFont(wx.Font(10, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            copy_btn = wx.Button(panel, label="Copy")
+            copy_btn.Bind(wx.EVT_BUTTON, self.on_copy_address)
+            row.Add(self.addr_field, 1, wx.RIGHT | wx.EXPAND, 6)
+            row.Add(copy_btn, 0)
+            addr.Add(row, 0, wx.ALL | wx.EXPAND, 8)
+            root.Add(addr, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+
+            # USDC Balance (only)
+            cards = wx.BoxSizer(wx.HORIZONTAL)
+            cards.Add(self._metric_card(panel, "USDC Balance", self._usdc_text()), 1, wx.RIGHT | wx.EXPAND, 8)
+            root.Add(cards, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+
+            # Recent transactions (IDs only; double-click to open)
+            tx_box = wx.StaticBox(panel, label="Recent Transactions")
+            tx = wx.StaticBoxSizer(tx_box, wx.VERTICAL)
+
+            self.tx_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.BORDER_NONE)
+            self.tx_list.InsertColumn(0, "Transaction ID", width=700)
+            self._populate_tx_ids()
+            # Double-click (or Enter) opens browser
+            self.tx_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_open_selected_tx)
+
+            tx.Add(self.tx_list, 1, wx.EXPAND)
+            root.Add(tx, 1, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+
+            # Status bar
+            self.status = self.CreateStatusBar(2)
+            self.status.SetStatusText("Ready", 0)
+            self._set_status_time()
+
+            panel.SetSizer(root)
+            # ensure layout expands properly
+            frame_sizer = wx.BoxSizer(wx.VERTICAL)
+            frame_sizer.Add(panel, 1, wx.EXPAND)
+            self.SetSizer(frame_sizer)
+            self.Layout()
+
+            # Shortcuts
+            accel = wx.AcceleratorTable([
+                (wx.ACCEL_CMD, ord("C"), copy_btn.GetId()),
+                (wx.ACCEL_CMD, ord("R"), refresh_btn.GetId()),
+            ])
+            self.SetAcceleratorTable(accel)
+
+        def _metric_card(self, parent, title, value):
+            card = wx.Panel(parent)
+            s = wx.BoxSizer(wx.VERTICAL)
+            t = wx.StaticText(card, label=title)
+            t.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_MEDIUM))
+            v = wx.StaticText(card, label=value)
+            v.SetFont(wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            s.Add(t, 0, wx.ALL, 10)
+            s.Add(v, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+            card.SetSizer(s)
+            return card
+
+        # --------------- Data helpers ---------------
+        def _usdc_text(self) -> str:
+            tokens = self.data.get("tokens") or []
+            usdc = next((t for t in tokens if t.get("mint") == USDC_MINT), None)
+            if not usdc:
+                return "0 USDC"
+            # uiAmount is already a string from your fetcher; keep it as-is
+            return f"{usdc.get('uiAmount', '0')} USDC"
+
+        def _populate_tx_ids(self):
+            self.tx_list.DeleteAllItems()
+            for url in self.tx_urls:
+                txid = _extract_txid(url)
+                self.tx_list.InsertItem(self.tx_list.GetItemCount(), txid)
+
+        def _set_status_time(self):
+            self.status.SetStatusText(datetime.now().strftime("%H:%M:%S"), 1)
+
+        # --------------- Events ---------------
+        def on_copy_address(self, _):
+            val = self.addr_field.GetValue()
+            if not val:
+                return
+            if wx.TheClipboard.Open():
+                wx.TheClipboard.SetData(wx.TextDataObject(val))
+                wx.TheClipboard.Close()
+                self.status.SetStatusText("Address copied", 0)
+                self._set_status_time()
+
+        def on_open_selected_tx(self, _):
+            idx = self.tx_list.GetFirstSelected()
+            if idx == -1:
+                return
+            # map back to original URL so cluster params etc. are preserved
+            url = self.tx_urls[idx] if idx < len(self.tx_urls) else None
+            if url:
+                webbrowser.open(url)
+                self.status.SetStatusText("Opened in browser", 0)
+                self._set_status_time()
+
+        def on_refresh(self, _):
+            # If you later want live refresh, re-fetch get_wallet_info() here.
+            # For now, just refresh labels from current data.
+            self._populate_tx_ids()
+            self.Layout()
+            self.status.SetStatusText("Refreshed", 0)
+            self._set_status_time()
+
+    app = wx.App(False)
+    WalletFrame(wallet_data)
+    app.MainLoop()
+
+
+# ----- Launch the UI after fetching data -----
+# Make sure get_wallet_info() is defined elsewhere (your existing async function).
+data = asyncio.run(get_wallet_info())
+if isinstance(data, dict) and data.get("success"):
+    show_wallet_ui(data)
+else:
+    logging.error("get_wallet_info failed: %s", data)
