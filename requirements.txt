@@ -9,4 +9,7 @@ solana
 solders
 build
 twine
+starlette
+uvicorn[standard]
+anyio
 deprecated # needed by Google ADK but not in requirments

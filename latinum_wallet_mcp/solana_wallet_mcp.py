@@ -3,6 +3,7 @@
 # Get balance API require to pass the public key.
 # Need to save the public key in supabase
 
+import asyncio
 import base64
 import os
 import sys
@@ -10,7 +11,7 @@ import logging
 import json
 from decimal import Decimal, ROUND_DOWN
 import threading
-from typing import Optional
+from typing import Optional, Any
 
 import base58
 import keyring
@@ -394,4 +395,128 @@ def build_mcp_wallet_server() -> Server:
 
     return server
 
-__all__ = ["build_mcp_wallet_server", "get_signed_transaction", "get_wallet_info"]
+
+def build_streamable_mcp_wallet_server() -> Server:
+    """Build MCP server optimized for streamable HTTP with progress notifications"""
+    
+    telemetry_node = "async"
+    _telemetry_sent = {"sent": False}
+
+    async def send_telemetry_async():
+        if telemetry_node == "async" and not _telemetry_sent["sent"]:
+            try:
+
+                def telemetry_wrapper():
+                    return collect_and_send_wallet_log(
+                        api_base_url="https://facilitator.latinum.ai",
+                        public_key=public_key
+                    )
+            
+                await asyncio.get_event_loop().run_in_executor(None, telemetry_wrapper)
+                _telemetry_sent["sent"] = True
+                logging.info("Async telemetry sent using thread pool")
+            except Exception:
+                logging.exception("Async telemetry failed")
+    
+    wallet_tool = FunctionTool(get_signed_transaction)
+    info_tool = FunctionTool(get_wallet_info)
+    server = Server("latinum-wallet-mcp-streamable")
+    
+    @server.list_tools()
+    async def list_tools():
+        logging.info("[MCP] Listing available tools.")
+        return [adk_to_mcp_tool_type(wallet_tool), adk_to_mcp_tool_type(info_tool)]
+    
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[mcp_types.ContentBlock]:
+        ctx = server.request_context  
+        logging.info(f"[MCP] call_tool invoked: name={name}, args={json.dumps(arguments)}")
+        
+        asyncio.create_task(send_telemetry_async())
+        
+        try:
+            await ctx.session.send_log_message(
+                level="info",
+                data=f"Processing wallet operation: {name}",
+                logger="wallet_operation",
+                related_request_id=ctx.request_id,
+            )
+            
+            result = None
+            
+            if name == wallet_tool.name:
+                await ctx.session.send_log_message(
+                    level="info",
+                    data="Generating signed transaction...",
+                    logger="wallet_operation",
+                    related_request_id=ctx.request_id,
+                )
+                
+                result = await wallet_tool.run_async(args=arguments, tool_context=None)
+                logging.info(f"[MCP] get_signed_transaction result: {repr(result)}")
+                
+                if not isinstance(result, dict):
+                    error_msg = f"Invalid result format: expected dict but got {type(result)}"
+                    logging.error(f"[MCP] ⚠️ {error_msg}")
+                    return [mcp_types.TextContent(type="text", text=f"Internal error: {error_msg}")]
+                
+                status = "Success" if result.get("success") else "Failed"
+                await ctx.session.send_log_message(
+                    level="info",
+                    data=f"Transaction generation {status.lower()}",
+                    logger="wallet_operation",
+                    related_request_id=ctx.request_id,
+                )
+                
+                message = result.get("message", "Success" if result.get("success") else "Wallet transaction failed.")
+                return [mcp_types.TextContent(type="text", text=message)]
+            
+            elif name == info_tool.name:
+                await ctx.session.send_log_message(
+                    level="info",
+                    data="Fetching wallet information...",
+                    logger="wallet_operation",
+                    related_request_id=ctx.request_id,
+                )
+                
+                result = await info_tool.run_async(args=arguments, tool_context=None)
+                logging.info(f"[MCP] get_wallet_info result: {repr(result)}")
+                
+                if not isinstance(result, dict):
+                    error_msg = f"Invalid result format: expected dict but got {type(result)}"
+                    logging.error(f"[MCP] {error_msg}")
+                    return [mcp_types.TextContent(type="text", text=f" Internal error: {error_msg}")]
+                
+                status = "Success" if result.get("success") else "Failed"
+                await ctx.session.send_log_message(
+                    level="info",
+                    data=f"Wallet info retrieval {status.lower()}",
+                    logger="wallet_operation",
+                    related_request_id=ctx.request_id,
+                )
+                
+                message = result.get("message", "Success" if result.get("success") else "Failed to fetch wallet info.")
+                return [mcp_types.TextContent(type="text", text=message)]
+            
+            logging.warning(f"[MCP] Unknown tool name: {name}")
+            await ctx.session.send_log_message(
+                level="warning",
+                data=f"Unknown tool requested: {name}",
+                logger="wallet_operation",
+                related_request_id=ctx.request_id,
+            )
+            return [mcp_types.TextContent(type="text", text=f"Tool not found: {name}")]
+            
+        except Exception as e:
+            logging.exception(f"[MCP] Exception during call_tool execution for '{name}': {e}")
+            await ctx.session.send_log_message(
+                level="error",
+                data=f"Error processing {name}: {str(e)}",
+                logger="wallet_operation",
+                related_request_id=ctx.request_id,
+            )
+            return [mcp_types.TextContent(type="text", text=f"Unexpected error: {e}")]
+    
+    return server
+
+__all__ = ["build_mcp_wallet_server", "build_streamable_mcp_wallet_server", "get_signed_transaction", "get_wallet_info"]
