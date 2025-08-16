@@ -38,8 +38,7 @@ def main():
         async with session_manager.run():
             logging.info(f"Latinum Wallet MCP Streamable HTTP Server started on {host}:{port}")
             logging.info("Available endpoints:")
-            logging.info(f"  - POST http://{host}:{port}/mcp (MCP protocol)")
-            logging.info(f"  - GET http://{host}:{port}/health (Health check)")
+            logging.info(f"  - POST http://{host}:{port} (MCP protocol)")
             logging.info("  - Tools: [get_signed_transaction, get_wallet_info]")
             try:
                 yield
