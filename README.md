@@ -1,6 +1,6 @@
 # 🔐 Latinum Wallet MCP
 
-[https://latinum.ai](https://latinum.ai)   
+[https://latinum.ai](https://latinum.ai)  
 [Latinum Tutorial](https://latinum.ai/article/latinum-wallet)
 
 A **Model Context Protocol (MCP)** server that enables AI agents (like Claude or Cursor) to pay for services through HTTP 402 requests and MCP tools.
@@ -60,6 +60,129 @@ Add the following configuration:
 
 ✅ Test your setup by following our tutorial: [Latinum Wallet Integration Guide](https://latinum.ai/articles/latinum-wallet)
 
+## 🚀 Dynamic MCP Server
+
+The Latinum Wallet MCP now includes a **Dynamic MCP Server** that allows you to register API endpoints at runtime and automatically convert them to MCP tools. This enables AI agents to interact with any REST API without code changes.
+
+### Key Features
+
+- **Runtime Registration**: Add/remove API endpoints via HTTP API
+- **Automatic Tool Conversion**: API endpoints become MCP tools automatically
+
+---
+
+### Quick Start Guide
+
+#### 1️ Start the Dynamic HTTP Server
+
+```bash
+# Run the dynamic MCP server
+python -m latinum_wallet_mcp.dynamic.http_server
+
+# Or with custom host/port
+PORT=3000 HOST=localhost python -m latinum_wallet_mcp.dynamic.http_server
+```
+
+> **Server starts on** `http://0.0.0.0:8080` **by default**
+
+**Server provides:**
+
+- **MCP Server**: Serves registered endpoints as MCP tools
+- **HTTP API**: Manage endpoints via REST API
+- **Health Check**: `/health` endpoint for monitoring
+
+#### Register API Endpoints
+
+Add endpoints using the HTTP API:
+
+```bash
+curl -X POST http://localhost:8080/api/endpoints \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "get_user",
+    "url": "https://jsonplaceholder.typicode.com/users/{id}",
+    "method": "GET",
+    "description": "Get user information by ID",
+    "parameters": [{
+      "name": "id",
+      "type": "number",
+      "description": "User ID",
+      "required": true
+    }]
+  }'
+```
+
+#### 3️⃣ List & Manage Endpoints
+
+```bash
+# List all endpoints
+curl http://localhost:8080/api/endpoints
+
+# Remove an endpoint
+curl -X DELETE http://localhost:8080/api/endpoints/get_user
+```
+
+---
+
+### 🔧 Claude Desktop Integration
+
+**Step-by-step setup:**
+
+1. **Start the server:**
+
+   ```bash
+   python -m latinum_wallet_mcp.dynamic.http_server
+   ```
+
+2. **Create public tunnel:**
+
+   ```bash
+   cloudflared tunnel --url http://localhost:8080
+   ```
+
+3. **Add to Claude Desktop:**
+   - Go to **Manage Connectors**
+   - Click **Add Connector**
+   - Provide a **Name** and the **tunneled server URL**
+
+---
+
+### 📋 API Reference
+
+#### Endpoint Configuration Schema
+
+```json
+{
+  "name": "endpoint_name",
+  "url": "https://api.example.com/users/{id}",
+  "method": "GET",
+  "description": "Endpoint description",
+  "parameters": [
+    {
+      "name": "id",
+      "type": "number",
+      "description": "Parameter description",
+      "required": true,
+      "default": null
+    }
+  ],
+  "headers": {
+    "Authorization": "Bearer token",
+    "X-API-Key": "your-key"
+  },
+  "timeout": 30.0
+}
+```
+
+#### HTTP API Endpoints
+
+| Method   | Endpoint                | Description                   |
+| -------- | ----------------------- | ----------------------------- |
+| `GET`    | `/health`               | Health check                  |
+| `GET`    | `/api/endpoints`        | List all registered endpoints |
+| `POST`   | `/api/endpoints`        | Register a new endpoint       |
+| `DELETE` | `/api/endpoints/{name}` | Remove an endpoint            |
+
 # 📋 Run from Source
 
 ```bash
@@ -82,6 +205,7 @@ https://explorer.solana.com/tx/3MHjT3tEuGUj58G3BYbiWqFqGDaYvwfRnCVrtwC8ZPCKkpGmy
 ```
 
 To install your local build as a CLI for testing with Claude:
+
 ```bash
 pip install --editable .
 ```
